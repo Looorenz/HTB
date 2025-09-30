@@ -13,10 +13,12 @@
   #È stato trovato un file binario /usr/bin/python3.8 evidenziato come rosso/giallo 
   #Per capire meglio, sono state controllate le capabilities del file con 'getcap /usr/bin/python3.8' 
   #cap_setuid → permette di cambiare arbitrariamente l’UID di un processo. Quindi puoi impersonare root (UID 0).
-
-cap_net_bind_service → permette di bindare socket su porte < 1024 (non rilevante per il privesc in questo caso).
+  #cap_net_bind_service → permette di bindare socket su porte < 1024 (non rilevante per il privesc in questo caso).
+  
   /usr/bin/python3.8 -c 'import os; os.setuid(0); os.system("/bin/bash")'
+  
   #Un file eseguibile (/usr/bin/python3.8) aveva una capability (CAP_SETUID) che gli permette
   #di impostare l’UID del processo; eseguendolo si è potuto chiamare setuid(0) dall’interno
   #di Python e così aprire una shell con UID 0 (root).
-root flag: 6ee076faf1df4a3e474cc348f6a3d5a4
+  
+  root flag: 6ee076faf1df4a3e474cc348f6a3d5a4
